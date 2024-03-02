@@ -417,7 +417,7 @@ class PRTouchZOffsetWrapper:
         z_probe[2] = homing_origin[2] + z_adjust - start_z_offset
         self.obj.probe.probe_calibrate_finalize(z_probe)
 
-    cmd_PRTOUCH_ACCURACY_help = "Probe Z-height accuracy at sensoor position"
+    cmd_PRTOUCH_ACCURACY_help = "Probe Z-height accuracy at sensor position"
     def cmd_PRTOUCH_ACCURACY(self, gcmd):
         self._ck_g28ed()
         speed = gcmd.get_float("PROBE_SPEED", self.cfg.probe_speed, above=0.)
