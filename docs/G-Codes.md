@@ -127,6 +127,14 @@ use this tool the Python "numpy" package must be installed (see the
 [measuring resonance document](Measuring_Resonances.md#software-installation)
 for more information).
 
+#### ANGLE_CHIP_CALIBRATE
+`ANGLE_CHIP_CALIBRATE CHIP=<chip_name>`: Perform internal sensor calibration,
+if implemented (MT6826S/MT6835).
+
+- **MT68XX**: The motor should be disconnected
+from any printer carriage before performing calibration.
+After calibration, the sensor should be reset by disconnecting the power.
+
 #### ANGLE_DEBUG_READ
 `ANGLE_DEBUG_READ CHIP=<config_name> REG=<register>`: Queries sensor
 register "register" (e.g. 44 or 0x2C). Can be useful for debugging
@@ -146,9 +154,19 @@ The following commands are available when the
 section](Config_Reference.md#axis_twist_compensation) is enabled.
 
 #### AXIS_TWIST_COMPENSATION_CALIBRATE
-`AXIS_TWIST_COMPENSATION_CALIBRATE [SAMPLE_COUNT=<value>]`: Initiates the X
-twist calibration wizard. `SAMPLE_COUNT` specifies the number of points along
-the X axis to calibrate at and defaults to 3.
+`AXIS_TWIST_COMPENSATION_CALIBRATE [AXIS=<X|Y>] [AUTO=<True|False>]
+[SAMPLE_COUNT=<value>]`
+
+Calibrates axis twist compensation by specifying the target axis or
+enabling automatic calibration.
+
+- **AXIS:** Define the axis (`X` or `Y`) for which the twist compensation
+will be calibrated. If not specified, the axis defaults to `'X'`.
+
+- **AUTO:** Enables automatic calibration mode. When `AUTO=True`, the
+calibration will run for both the X and Y axes. In this mode, `AXIS`
+cannot be specified. If both `AXIS` and `AUTO` are provided, an error
+will be raised.
 
 ### [bed_mesh]
 
@@ -475,6 +493,20 @@ enabled.
 #### SET_FAN_SPEED
 `SET_FAN_SPEED FAN=config_name SPEED=<speed>` This command sets the
 speed of a fan. "speed" must be between 0.0 and 1.0.
+
+`SET_FAN_SPEED PIN=config_name TEMPLATE=<template_name>
+[<param_x>=<literal>]`: If `TEMPLATE` is specified then it assigns a
+[display_template](Config_Reference.md#display_template) to the given
+fan. For example, if one defined a `[display_template
+my_fan_template]` config section then one could assign
+`TEMPLATE=my_fan_template` here. The display_template should produce a
+string containing a floating point number with the desired value. The
+template will be continuously evaluated and the fan will be
+automatically set to the resulting speed. One may set display_template
+parameters to use during template evaluation (parameters will be
+parsed as Python literals). If TEMPLATE is an empty string then this
+command will clear any previous template assigned to the pin (one can
+then use `SET_FAN_SPEED` commands to manage the values directly).
 
 ### [filament_switch_sensor]
 
@@ -857,6 +889,20 @@ output `VALUE`. VALUE should be 0 or 1 for "digital" output pins. For
 PWM pins, set to a value between 0.0 and 1.0, or between 0.0 and
 `scale` if a scale is configured in the output_pin config section.
 
+`SET_PIN PIN=config_name TEMPLATE=<template_name> [<param_x>=<literal>]`:
+If `TEMPLATE` is specified then it assigns a
+[display_template](Config_Reference.md#display_template) to the given
+pin. For example, if one defined a `[display_template
+my_pin_template]` config section then one could assign
+`TEMPLATE=my_pin_template` here. The display_template should produce a
+string containing a floating point number with the desired value. The
+template will be continuously evaluated and the pin will be
+automatically set to the resulting value. One may set display_template
+parameters to use during template evaluation (parameters will be
+parsed as Python literals). If TEMPLATE is an empty string then this
+command will clear any previous template assigned to the pin (one can
+then use `SET_PIN` commands to manage the values directly).
+
 ### [palette2]
 
 The following commands are available when the
@@ -1021,6 +1067,21 @@ CYCLE_TIME parameter is not stored between SET_PIN commands (any
 SET_PIN command without an explicit CYCLE_TIME parameter will use the
 `cycle_time` specified in the pwm_cycle_time config section).
 
+### [quad_gantry_level]
+
+The following commands are available when the
+[quad_gantry_level config section](Config_Reference.md#quad_gantry_level)
+is enabled.
+
+#### QUAD_GANTRY_LEVEL
+`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+[HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
+will probe the points specified in the config and then make
+independent adjustments to each Z stepper to compensate for tilt. See
+the PROBE command for details on the optional probe parameters. The
+optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
+override those options specified in the config file.
+
 ### [query_adc]
 
 The query_adc module is automatically loaded.
@@ -1056,20 +1117,19 @@ is enabled (also see the
 all enabled accelerometer chips.
 
 #### TEST_RESONANCES
-`TEST_RESONANCES AXIS=<axis> OUTPUT=<resonances,raw_data>
+`TEST_RESONANCES AXIS=<axis> [OUTPUT=<resonances,raw_data>]
 [NAME=<name>] [FREQ_START=<min_freq>] [FREQ_END=<max_freq>]
-[HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[POINT=x,y,z] [INPUT_SHAPING=[<0:1>]]`: Runs the resonance
+[ACCEL_PER_HZ=<accel_per_hz>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<chip_name>]
+[POINT=x,y,z] [INPUT_SHAPING=<0:1>]`: Runs the resonance
 test in all configured probe points for the requested "axis" and
 measures the acceleration using the accelerometer chips configured for
 the respective axis. "axis" can either be X or Y, or specify an
 arbitrary direction as `AXIS=dx,dy`, where dx and dy are floating
 point numbers defining a direction vector (e.g. `AXIS=X`, `AXIS=Y`, or
 `AXIS=1,-1` to define a diagonal direction). Note that `AXIS=dx,dy`
-and `AXIS=-dx,-dy` is equivalent. `adxl345_chip_name` can be one or
-more configured adxl345 chip,delimited with comma, for example
-`CHIPS="adxl345, adxl345 rpi"`. Note that `adxl345` can be omitted from
-named adxl345 chips. If POINT is specified it will override the point(s)
+and `AXIS=-dx,-dy` is equivalent. `chip_name` can be one or
+more configured accel chips, delimited with comma, for example
+`CHIPS="adxl345, adxl345 rpi"`. If POINT is specified it will override the point(s)
 configured in `[resonance_tester]`. If `INPUT_SHAPING=0` or not set(default),
 disables input shaping for the resonance testing, because
 it is not valid to run the resonance testing with the input shaper
@@ -1086,8 +1146,9 @@ frequency response is calculated (across all probe points) and written into
 
 #### SHAPER_CALIBRATE
 `SHAPER_CALIBRATE [AXIS=<axis>] [NAME=<name>] [FREQ_START=<min_freq>]
-[FREQ_END=<max_freq>] [HZ_PER_SEC=<hz_per_sec>] [CHIPS=<adxl345_chip_name>]
-[MAX_SMOOTHING=<max_smoothing>]`: Similarly to `TEST_RESONANCES`, runs
+[FREQ_END=<max_freq>] [ACCEL_PER_HZ=<accel_per_hz>][HZ_PER_SEC=<hz_per_sec>]
+[CHIPS=<chip_name>] [MAX_SMOOTHING=<max_smoothing>] [INPUT_SHAPING=<0:1>]`:
+Similarly to `TEST_RESONANCES`, runs
 the resonance test as configured, and tries to find the optimal
 parameters for the input shaper for the requested axis (or both X and
 Y axes if `AXIS` parameter is unset). If `MAX_SMOOTHING` is unset, its
@@ -1429,11 +1490,13 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This
-command will probe the points specified in the config and then make independent
-adjustments to each Z stepper to compensate for tilt. See the PROBE command for
-details on the optional probe parameters. The optional `HORIZONTAL_MOVE_Z`
-value overrides the `horizontal_move_z` option specified in the config file.
+`Z_TILT_ADJUST [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+[HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
+will probe the points specified in the config and then make
+independent adjustments to each Z stepper to compensate for tilt. See
+the PROBE command for details on the optional probe parameters. The
+optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
+override those options specified in the config file.
 
 ### [temperature_probe]
 
