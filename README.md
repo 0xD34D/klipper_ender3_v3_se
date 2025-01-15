@@ -1,18 +1,20 @@
-Welcome to the Klipper project!
+### Installation instructions
 
-[![Klipper](docs/img/klipper-logo-small.png)](https://www.klipper3d.org/)
+1. Run KIAUH and uninstall klipper (ONLY klipper)
+2. In KIAUH folder create file named klipper_repos.txt and add these 2 lines:
 
-https://www.klipper3d.org/
+```text
+https://github.com/Klipper3d/klipper
+https://github.com/0xD34D/klipper_ender3_v3_se
+```
 
-Klipper is a 3d-Printer firmware. It combines the power of a general
-purpose computer with one or more micro-controllers. See the
-[features document](https://www.klipper3d.org/Features.html) for more
-information on why you should use Klipper.
+3. Then in KIAUH settings change klipper repo to this repos.
+4. Install klipper in KIAUH as usual
+5. Once installed build firmware as usual from the klipper folder
+6. Flash the firmware to printer
+7. Create prtouch.cfg with contents from [config repo](https://github.com/0xD34D/ender3-v3-se-klipper-config/blob/main/prtouch.cfg)
+8. In existing printer.cfg add line [include prtouch.cfg]
+9. Restart klipper service
+10. PRTOUCH_PROBE_ZOFFSET should now work and return Z-offset in the end of printer.cfg
 
-To begin using Klipper start by
-[installing](https://www.klipper3d.org/Installation.html) it.
-
-Klipper is Free Software. See the [license](COPYING) or read the
-[documentation](https://www.klipper3d.org/Overview.html). We depend on
-the generous support from our
-[sponsors](https://www.klipper3d.org/Sponsors.html).
+When running PRTOUCH_PROBE_ZOFFSET be ready to abort if thing go wrong.
