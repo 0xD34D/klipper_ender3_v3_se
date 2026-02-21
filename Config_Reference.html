@@ -962,6 +962,13 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#bmi160" class="md-nav__link">
+    [bmi160]
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#mpu9250" class="md-nav__link">
     [mpu9250]
   </a>
@@ -3119,6 +3126,13 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#bmi160" class="md-nav__link">
+    [bmi160]
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#mpu9250" class="md-nav__link">
     [mpu9250]
   </a>
@@ -4690,7 +4704,7 @@ max_accel:
 #max_z_accel:
 </code></pre></div>
 
-<p>Then a user must define three carriages for X, Y, and Z axes, e.g.:</p>
+<p>Then a user must define three primary carriages for X, Y, and Z axes, e.g.:</p>
 <div class="highlight"><pre><span></span><code>[carriage carriage_x]
 axis:
 #   Axis of a carriage, either x, y, or z. This parameter must be provided,
@@ -5756,6 +5770,37 @@ cs_pin:
 #   See the &quot;adxl345&quot; section for information on this parameter.
 </code></pre></div>
 
+<h3 id="bmi160">[bmi160]<a class="headerlink" href="#bmi160" title="Permanent link">&para;</a></h3>
+<p>BMI160 accelerometer. This sensor can be queried via I2C or SPI bus.</p>
+<div class="highlight"><pre><span></span><code>[bmi160]
+#i2c_address:
+#   Default is 105 (0x69). If SA0 is tied to GND, use 104 (0x68).
+#   Only used for I2C.
+#i2c_mcu:
+#i2c_bus:
+#i2c_speed:
+#   See the &quot;common I2C settings&quot; section for a description of the
+#   above parameters. Only used for I2C.
+#cs_pin:
+#spi_speed:
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the &quot;common SPI settings&quot; section for a description of the
+#   above parameters. Only used for SPI.
+#axes_map: x, y, z
+#   See the &quot;adxl345&quot; section for information on this parameter.
+</code></pre></div>
+
+<p><strong>Important:</strong> Many BMI160 modules use ambiguous pin labels. For SPI:</p>
+<ul>
+<li>Use <strong>SCL</strong> for clock (not SCX)</li>
+<li>Use <strong>SDA</strong> for MOSI (not SDX)</li>
+<li>Use <strong>SA0</strong> for MISO</li>
+<li>Use <strong>CS</strong> for chip select</li>
+</ul>
+<p>The pins labeled SCX/SDX are for the auxiliary magnetometer bus.</p>
 <h3 id="mpu9250">[mpu9250]<a class="headerlink" href="#mpu9250" title="Permanent link">&para;</a></h3>
 <p>Support for MPU-9250, MPU-9255, MPU-6515, MPU-6050, and MPU-6500
 accelerometers (one may define any number of sections with an
@@ -6097,6 +6142,9 @@ sensor_type: ldc1612
 #samples_tolerance:
 #samples_tolerance_retries:
 #   See the &quot;probe&quot; section for information on these parameters.
+#tap_threshold: 0
+#   Noise cutoff/stop trigger threshold delta Hz per sample
+#   See the Eddy_Probe.md for explanation
 </code></pre></div>
 
 <h3 id="axis_twist_compensation">[axis_twist_compensation]<a class="headerlink" href="#axis_twist_compensation" title="Permanent link">&para;</a></h3>
@@ -6239,10 +6287,16 @@ kinematic, see the following configuration
 Please note that in this case the <code>[dual_carriage]</code> configuration deviates
 from the configuration described above:</p>
 <div class="highlight"><pre><span></span><code>[dual_carriage my_dc_carriage]
-primary_carriage:
-#   Defines the matching primary carriage of this dual carriage and
-#   the corresponding IDEX axis. Must match a name of a defined `[carriage]`.
-#   This parameter must be provided.
+#primary_carriage:
+#   Defines the matching carriage on the same gantry as this dual carriage and
+#   the corresponding dual axis. Must match a name of a defined `[carriage]` or
+#   another independent `[dual_carriage]`. If not set, which is a default,
+#   defines a dual carriage independent of a `[carriage]` with the same axis
+#   as this one (e.g. on a different gantry).
+#axis:
+#   Axis of a carriage, either x or y. If &#39;primary_carriage&#39; is defined, then
+#   this parameter defaults to the &#39;axis&#39; parameter of that primary carriage,
+#   otherwise this parameter must be defined.
 #safe_distance:
 #   The minimum distance (in mm) to enforce between the dual and the primary
 #   carriages. If a G-Code command is executed that will bring the carriages
@@ -6251,7 +6305,8 @@ primary_carriage:
 #   position_min and position_max for the dual and primary carriages. If set
 #   to 0 (or safe_distance is unset and position_min and position_max are
 #   identical for the primary and dual carriages), the carriages proximity
-#   checks will be disabled.
+#   checks will be disabled. Only valid for a dual_carriage with a defined
+#   &#39;primary_carriage&#39;.
 endstop_pin:
 #position_min:
 position_endstop:
