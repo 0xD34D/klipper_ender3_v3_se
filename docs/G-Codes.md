@@ -343,18 +343,25 @@ The following command is available when the
 enabled.
 
 #### SET_DUAL_CARRIAGE
-`SET_DUAL_CARRIAGE CARRIAGE=<carriage> [MODE=[PRIMARY|COPY|MIRROR]]`:
+`SET_DUAL_CARRIAGE CARRIAGE=<carriage> [MODE=[PRIMARY|COPY|MIRROR|INACTIVE]]`:
 This command will change the mode of the specified carriage.
 If no `MODE` is provided it defaults to `PRIMARY`. `<carriage>` must
 reference a defined primary or dual carriage for `generic_cartesian`
 kinematics or be 0 (for primary carriage) or 1 (for dual carriage)
 for all other kinematics supporting IDEX. Setting the mode to `PRIMARY`
-deactivates the other carriage and makes the specified carriage execute
-subsequent G-Code commands as-is. `COPY` and `MIRROR` modes are supported
-only for dual carriages. When set to either of these modes, dual carriage
-will then track the subsequent moves of its primary carriage and either
-copy relative movements of it (in `COPY` mode) or execute them in the
-opposite (mirror) direction (in `MIRROR` mode).
+deactivates all other carriages on the same axis and makes the specified
+carriage execute subsequent G-Code movement commands as-is. Before activating
+`COPY` or `MIRROR` mode for a carriage, a different one must be activated as
+`PRIMARY` on the same axis. When set to either of these two modes, the carriage
+will track the subsequent G-Code moves and either copy relative movements
+(in `COPY` mode) or execute them in the opposite (mirror) direction (in
+`MIRROR` mode). Setting the mode to `INACTIVE` deactivates the carriage and
+makes it ignore further G-Code moves. Note that deactivating the primary
+carriage on the axis does not disable other carriages working in `COPY` or
+`MIRROR` mode, which can be used to disable printing a failed part by any of
+the tools and park that tool to prevent collisions with an unfinished part, see
+this [sample configuration](../config/sample-corexyuv.cfg) for macros examples.
+
 
 #### SAVE_DUAL_CARRIAGE_STATE
 `SAVE_DUAL_CARRIAGE_STATE [NAME=<state_name>]`: Save the current positions
@@ -365,14 +372,18 @@ to the given string. If NAME is not provided it defaults to "default".
 
 #### RESTORE_DUAL_CARRIAGE_STATE
 `RESTORE_DUAL_CARRIAGE_STATE [NAME=<state_name>] [MOVE=[0|1] [MOVE_SPEED=<speed>]]`:
-Restore the previously saved positions of the dual carriages and their modes,
-unless "MOVE=0" is specified, in which case only the saved modes will be
-restored, but not the positions of the carriages. If positions are being
-restored and "MOVE_SPEED" is specified, then the toolhead moves will be
-performed with the given speed (in mm/s); otherwise the toolhead move will
-use the rail homing speed. Note that the carriages restore their positions
-only over their own axis, which may be necessary to correctly restore COPY
-and MIRROR mode of the dual carriage.
+Restore the previously saved states of all dual and their primary carriages.
+This command restores the modes of the carriages and moves them to their
+previously saved positions, unless "MOVE=0" is specified. If positions are being
+restored and "MOVE_SPEED" is specified, then the carriages will move with at
+most the provided speed (in mm/s); otherwise the homing speeds of the
+corresponding carriages will be used as a reference. Note that the carriages
+restore their positions only over their own axes, which may be necessary to
+correctly restore COPY and MIRROR mode of the dual carriage. In addition, this
+command updates the Klipper toolhead position for each axis that has some dual
+carriages: it is set to match the actual position of the activated primary
+carriage of an axis or, if an axis does not have a saved primary carriage,
+to the axis position when `SAVE_DUAL_CARRIAGE_STATE` command was called.
 
 ### [endstop_phase]
 
@@ -989,22 +1000,34 @@ enabled.
 
 #### MANUAL_STEPPER
 `MANUAL_STEPPER STEPPER=config_name [ENABLE=[0|1]]
-[SET_POSITION=<pos>] [SPEED=<speed>] [ACCEL=<accel>] [MOVE=<pos>
-[STOP_ON_ENDSTOP=[1|2|-1|-2]] [SYNC=0]]`: This command will alter the
-state of the stepper. Use the ENABLE parameter to enable/disable the
-stepper. Use the SET_POSITION parameter to force the stepper to think
-it is at the given position. Use the MOVE parameter to request a
-movement to the given position. If SPEED and/or ACCEL is specified
-then the given values will be used instead of the defaults specified
-in the config file. If an ACCEL of zero is specified then no
-acceleration will be performed. If STOP_ON_ENDSTOP=1 is specified then
-the move will end early should the endstop report as triggered (use
-STOP_ON_ENDSTOP=2 to complete the move without error even if the
-endstop does not trigger, use -1 or -2 to stop when the endstop
-reports not triggered). Normally future G-Code commands will be
-scheduled to run after the stepper move completes, however if a manual
-stepper move uses SYNC=0 then future G-Code movement commands may run
-in parallel with the stepper movement.
+[SET_POSITION=<pos>] [SPEED=<speed>] [ACCEL=<accel>] [MOVE=<pos>]
+[SYNC=0]]`: This command will alter the state of the stepper. Use the
+ENABLE parameter to enable/disable the stepper. Use the SET_POSITION
+parameter to force the stepper to think it is at the given
+position. Use the MOVE parameter to request a movement to the given
+position. If SPEED and/or ACCEL is specified then the given values
+will be used instead of the defaults specified in the config file. If
+an ACCEL of zero is specified then no acceleration will be
+performed. Normally future G-Code commands will be scheduled to run
+after the stepper move completes, however if a manual stepper move
+uses SYNC=0 then future G-Code movement commands may run in parallel
+with the stepper movement.
+
+`MANUAL_STEPPER STEPPER=config_name [SPEED=<speed>] [ACCEL=<accel>]
+MOVE=<pos> STOP_ON_ENDSTOP=<check_type>`: If STOP_ON_ENDSTOP is
+specified then the move will end early if an endstop event occurs. The
+`STOP_ON_ENDSTOP` parameter may be set to one of the following values:
+
+* `probe`: The movement will stop when the endstop reports triggered.
+* `home`: The movement will stop when the endstop reports triggered
+  and the final position of the manual_stepper will be set such that
+  the trigger position matches the position specified in the `MOVE`
+  parameter.
+* `inverted_probe`, `inverted_home`: As above, however, the movement
+  will stop when the endstop reports it is in a non-triggered state.
+* `try_probe`, `try_inverted_probe`, `try_home`, `try_inverted_home`:
+  As above, but no error will be reported if the movement fully
+  completes without an endstop event stopping the move early.
 
 `MANUAL_STEPPER STEPPER=config_name GCODE_AXIS=[A-Z]
 [LIMIT_VELOCITY=<velocity>] [LIMIT_ACCEL=<accel>]
@@ -1160,23 +1183,25 @@ The following commands are available when a
 see the [probe calibrate guide](Probe_Calibrate.md)).
 
 #### PROBE
-`PROBE [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>] [SAMPLES=<count>]
-[SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
+`PROBE [METHOD=<value>] [PROBE_SPEED=<mm/s>] [LIFT_SPEED=<mm/s>]
+[SAMPLES=<count>] [SAMPLE_RETRACT_DIST=<mm>] [SAMPLES_TOLERANCE=<mm>]
 [SAMPLES_TOLERANCE_RETRIES=<count>] [SAMPLES_RESULT=median|average]`:
 Move the nozzle downwards until the probe triggers. If any of the
 optional parameters are provided they override their equivalent
 setting in the [probe config section](Config_Reference.md#probe).
+The optional parameter `METHOD` is probe-specific.
 
 #### QUERY_PROBE
 `QUERY_PROBE`: Report the current status of the probe ("triggered" or
 "open").
 
 #### PROBE_ACCURACY
-`PROBE_ACCURACY [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
+`PROBE_ACCURACY [METHOD=<value>] [PROBE_SPEED=<mm/s>] [SAMPLES=<count>]
 [SAMPLE_RETRACT_DIST=<mm>]`: Calculate the maximum, minimum, average,
 median, and standard deviation of multiple probe samples. By default,
 10 SAMPLES are taken. Otherwise the optional parameters default to
 their equivalent setting in the probe config section.
+The optional parameter `METHOD` is probe-specific.
 
 #### PROBE_CALIBRATE
 `PROBE_CALIBRATE [SPEED=<speed>] [<probe_parameter>=<value>]`: Run a
@@ -1237,13 +1262,14 @@ The following commands are available when the
 is enabled.
 
 #### QUAD_GANTRY_LEVEL
-`QUAD_GANTRY_LEVEL [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+`QUAD_GANTRY_LEVEL [METHOD=<value>] [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
 [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
 will probe the points specified in the config and then make
 independent adjustments to each Z stepper to compensate for tilt. See
 the PROBE command for details on the optional probe parameters. The
 optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
 override those options specified in the config file.
+The optional parameter `METHOD` is probe-specific.
 
 ### [query_adc]
 
@@ -1672,10 +1698,11 @@ The following commands are available when the
 [z_tilt config section](Config_Reference.md#z_tilt) is enabled.
 
 #### Z_TILT_ADJUST
-`Z_TILT_ADJUST [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
+`Z_TILT_ADJUST [METHOD=<value>] [RETRIES=<value>] [RETRY_TOLERANCE=<value>]
 [HORIZONTAL_MOVE_Z=<value>] [<probe_parameter>=<value>]`: This command
 will probe the points specified in the config and then make
 independent adjustments to each Z stepper to compensate for tilt. See
 the PROBE command for details on the optional probe parameters. The
 optional `RETRIES`, `RETRY_TOLERANCE`, and `HORIZONTAL_MOVE_Z` values
 override those options specified in the config file.
+The optional parameter `METHOD` is probe-specific.
