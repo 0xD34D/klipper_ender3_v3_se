@@ -504,11 +504,11 @@ class PrinterConfig:
         if value is None:
             res = {'type': 'deprecated_option'}
             defmsg = ("Option '%s' in section '%s' is deprecated."
-                   % (option, self.section))
+                   % (option, section))
         else:
             res = {'type': 'deprecated_value', 'value': value}
             defmsg = ("Value '%s' in option '%s' in section '%s' is deprecated."
-                      % (value, option, self.section))
+                      % (value, option, section))
         if msg is None:
             msg = defmsg
         res['message'] = msg
@@ -528,6 +528,17 @@ class PrinterConfig:
             msg = defmsg
         res = {'type': 'deprecated_gcode', 'message': msg,
                'command': cmd, 'parameter': param, 'value': str(value)}
+        self._add_deprecated(res)
+    def deprecate_mcu_code(self, mcu, feature, msg=None):
+        mcu_name = mcu.get_name()
+        if msg is None:
+            vhost = self.printer.start_args['software_version']
+            vmcu = mcu.get_status()['mcu_version']
+            msg = ("MCU '%s' has deprecated code (it is missing feature '%s')."
+                   " Recompiling and flashing is recommended (MCU version '%s',"
+                   " host version '%s')." % (mcu_name, feature, vmcu, vhost))
+        res = {'type': 'deprecated_mcu_code', 'message': msg,
+               'mcu': mcu_name, 'feature': feature}
         self._add_deprecated(res)
     # Status reporting
     def _build_status_config(self, config):
