@@ -5568,16 +5568,19 @@ or <a href="Config_Reference.html#hall_filament_width_sensor">hall filament widt
 is enabled (also see <a href="TSL1401CL_Filament_Width_Sensor.html">TSLl401CL Filament Width Sensor</a>
 and <a href="Hall_Filament_Width_Sensor.html">Hall Filament Width Sensor</a>):</p>
 <h4 id="query_filament_width">QUERY_FILAMENT_WIDTH<a class="headerlink" href="#query_filament_width" title="Permanent link">&para;</a></h4>
-<p><code>QUERY_FILAMENT_WIDTH</code>: Return the current measured filament width.</p>
+<p><code>QUERY_FILAMENT_WIDTH</code>: Return the current measured filament width, the
+state of the width sensor, the state of the filament sensor and the state
+of flow compensation.</p>
 <h4 id="reset_filament_width_sensor">RESET_FILAMENT_WIDTH_SENSOR<a class="headerlink" href="#reset_filament_width_sensor" title="Permanent link">&para;</a></h4>
 <p><code>RESET_FILAMENT_WIDTH_SENSOR</code>: Clear all sensor readings. Helpful
-after filament change.</p>
+after filament change. Resets flow rate to 100%.</p>
 <h4 id="disable_filament_width_sensor">DISABLE_FILAMENT_WIDTH_SENSOR<a class="headerlink" href="#disable_filament_width_sensor" title="Permanent link">&para;</a></h4>
 <p><code>DISABLE_FILAMENT_WIDTH_SENSOR</code>: Turn off the filament width sensor
-and stop using it for flow control.</p>
+and stop using it for flow compensation. Resets flow rate to 100%.</p>
 <h4 id="enable_filament_width_sensor">ENABLE_FILAMENT_WIDTH_SENSOR<a class="headerlink" href="#enable_filament_width_sensor" title="Permanent link">&para;</a></h4>
-<p><code>ENABLE_FILAMENT_WIDTH_SENSOR</code>: Turn on the filament width sensor and
-start using it for flow control.</p>
+<p><code>ENABLE_FILAMENT_WIDTH_SENSOR [FLOW_COMPENSATION=[0|1]</code>: Turn on the filament
+width sensor and enable or disable flow compensation. If <code>FLOW_COMPENSATION</code>
+is not specified, the current flow compensation state is preserved.</p>
 <h4 id="query_raw_filament_width">QUERY_RAW_FILAMENT_WIDTH<a class="headerlink" href="#query_raw_filament_width" title="Permanent link">&para;</a></h4>
 <p><code>QUERY_RAW_FILAMENT_WIDTH</code>: Return the current ADC channel readings
 and RAW sensor value for calibration points.</p>
