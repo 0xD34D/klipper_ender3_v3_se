@@ -22,75 +22,99 @@ def assert_is_int32(value, frac_bits):
 # convert a floating point value to a 32 bit fixed point representation
 # checks for overflow
 def to_fixed_32(value, frac_bits=0):
-    fixed_val = int(value * (2**frac_bits))
+    fixed_val = int(round(value * (2**frac_bits)))
     return assert_is_int32(fixed_val, frac_bits)
 
+# Determine maximum frac bits for a list of values
+def calc_frac_bits(values):
+    if all([v == int(v) for v in values]):
+        return 0
+    mv = max([abs(v) for v in values])
+    frac_bits = 31 - int(mv).bit_length() # 63 - int(mv * (1<<32)).bit_length()
+    if frac_bits <= 0:
+        return 0
+    try:
+        validate = [to_fixed_32(v) for v in values]
+    except OverflowError as e:
+        # Handle rare case where rounding causes an overflow
+        return frac_bits - 1
+    return frac_bits
+
+# Pre-generated SOS filters (avoid Scipy package for common installs)
+GeneratedSOS = {
+    ('lowpass', 10.0, 4): [
+        [0.004824343357716228, 0.009648686715432456, 0.004824343357716228,
+         1.0, -1.0485995763626117, 0.2961403575616696],
+        [1.0, 2.0, 1.0, 1.0, -1.3209134308194264, 0.6327387928852766],
+    ],
+}
+
+# Helper tool to pre-generate SOS filters.  Run with something like:
+#  python -c 'import trigger_analog as m; m.pre_gen_filt("lowpass", 250, 25, 4)'
+def pre_gen_filt(btype, sps, freq, order):
+    global GeneratedSOS
+    GeneratedSOS = {}
+    # Create filter
+    df = DigitalFilter(sps, ImportError)
+    fs = df._butter(freq, btype, order)
+    # Write filter info to stdout
+    msgs = []
+    msgs.append("    ('%s', %s, %d): [" % (btype, repr(float(sps)/freq), order))
+    for data in fs:
+        coeffs = ", ".join([repr(float(c)) for c in data])
+        msgs.append("        [%s]," % coeffs,)
+    msgs.append("    ],")
+    msgs.append("")
+    import sys
+    sys.stdout.write("\n".join(msgs))
 
 # Digital filter designer and container
 class DigitalFilter:
-    def __init__(self, sps, cfg_error, highpass=None, highpass_order=1,
-            lowpass=None, lowpass_order=1, notches=None, notch_quality=2.0):
+    def __init__(self, sps, cfg_error):
         self.filter_sections = []
-        self.initial_state = []
+        self.initial_state = None
         self.sample_frequency = sps
-        # an empty filter can be created without SciPi/numpy
-        if not (highpass or lowpass or notches):
-            return
+        self.cfg_error = cfg_error
+    def get_scipy_signal(self):
         try:
             import scipy.signal as signal
-            import numpy
         except:
-            raise cfg_error("DigitalFilter require the SciPy module")
-        if highpass:
-            self.filter_sections.extend(
-                self._butter(highpass, "highpass", highpass_order))
-        if lowpass:
-            self.filter_sections.extend(
-                self._butter(lowpass, "lowpass", lowpass_order))
-        if notches is None:
-            notches = []
-        for notch_freq in notches:
-            self.filter_sections.append(self._notch(notch_freq, notch_quality))
-        if len(self.filter_sections) > 0:
-            self.initial_state = signal.sosfilt_zi(self.filter_sections)
-
+            raise self.cfg_error("DigitalFilter require the SciPy module")
+        return signal
+    def add_highpass(self, highpass, highpass_order):
+        f = self._butter(highpass, "highpass", highpass_order)
+        self.filter_sections.extend(f)
+    def add_lowpass(self, lowpass, lowpass_order):
+        f = self._butter(lowpass, "lowpass", lowpass_order)
+        self.filter_sections.extend(f)
+    def add_notch(self, notch_freq, notch_quality):
+        signal = self.get_scipy_signal()
+        b, a = signal.iirnotch(notch_freq, Q=notch_quality,
+                               fs=self.sample_frequency)
+        f = signal.tf2sos(b, a)[0]
+        self.filter_sections.append(f)
+    def add_derivative(self):
+        # Sample to sample difference (derivative) as stage in SOS filter
+        self.filter_sections.append((1., -1., 0., 1., 0., 0.))
+    def setup_initial_state(self):
+        if not self.filter_sections:
+            return
+        self.initial_state = signal.sosfilt_zi(self.filter_sections)
     def _butter(self, frequency, btype, order):
-        import scipy.signal as signal
+        key = (btype, float(self.sample_frequency)/frequency, int(order))
+        if key in GeneratedSOS:
+            return GeneratedSOS[key]
+        signal = self.get_scipy_signal()
         return signal.butter(order, Wn=frequency, btype=btype,
             fs=self.sample_frequency, output='sos')
-
-    def _notch(self, freq, quality):
-        import scipy.signal as signal
-        b, a = signal.iirnotch(freq, Q=quality, fs=self.sample_frequency)
-        return signal.tf2sos(b, a)[0]
-
     def get_filter_sections(self):
         return self.filter_sections
-
     def get_initial_state(self):
+        if self.initial_state is None:
+            return [[0., 0.]] * len(self.filter_sections)
         return self.initial_state
-
-    def filtfilt(self, data):
-        import scipy.signal as signal
-        import numpy
-        data = numpy.array(data)
-        return signal.sosfiltfilt(self.filter_sections, data)
-
-# Produce sample to sample difference (derivative) of a DigitalFilter
-class DerivativeFilter:
-    def __init__(self, main_filter):
-        self._main_filter = main_filter
-
-    def get_main_filter(self):
-        return self._main_filter
-
-    def get_filter_sections(self):
-        s = list(self._main_filter.get_filter_sections())
-        return s + [(1., -1., 0., 1., 0., 0.)]
-
-    def get_initial_state(self):
-        s = list(self._main_filter.get_initial_state())
-        return s + [(-1., 0.)]
+    def get_size(self):
+        return len(self.filter_sections)
 
 # Control an `sos_filter` object on the MCU
 class MCU_SosFilter:
@@ -103,11 +127,11 @@ class MCU_SosFilter:
         # SOS filter "design"
         self._design = None
         self._coeff_frac_bits = 0
+        self._last_calc_frac_bits = None
         self._start_value = 0.
         # Offset and scaling
         self._offset = 0
         self._scale = 1.
-        self._scale_frac_bits = 0
         self._auto_offset = False
         # MCU commands
         self._oid = self._mcu.create_oid()
@@ -136,11 +160,20 @@ class MCU_SosFilter:
     def get_oid(self):
         return self._oid
 
+    # Determine the frac_bits to use for sos filter coefficients
+    def _calc_coeff_frac_bits(self, filter_sections):
+        coeffs = sum([list(f) for f in filter_sections], [])
+        if not filter_sections or coeffs == self._last_calc_frac_bits:
+            return
+        self._coeff_frac_bits = calc_frac_bits(coeffs)
+        self._last_calc_frac_bits = coeffs
+
     # convert the SciPi SOS filters to fixed point format
     def _convert_filter(self):
         if self._design is None:
             return []
         filter_sections = self._design.get_filter_sections()
+        self._calc_coeff_frac_bits(filter_sections)
         sos_fixed = []
         for section in filter_sections:
             nun_coeff = len(section)
@@ -183,17 +216,14 @@ class MCU_SosFilter:
         self._start_value = start_value
 
     # Set conversion of a raw value 1 to a 1.0 value processed by sos filter
-    def set_offset_scale(self, offset=0, scale=1., scale_frac_bits=0,
-                         auto_offset=False):
+    def set_offset_scale(self, offset=0, scale=1., auto_offset=False):
         self._offset = offset
         self._scale = scale
-        self._scale_frac_bits = scale_frac_bits
         self._auto_offset = auto_offset
 
     # Change the filter coefficients and state at runtime
-    def set_filter_design(self, design, coeff_frac_bits=29):
+    def set_filter_design(self, design):
         self._design = design
-        self._coeff_frac_bits = coeff_frac_bits
 
     # Resets the filter state back to initial conditions at runtime
     def reset_filter(self):
@@ -220,9 +250,9 @@ class MCU_SosFilter:
         for i, state in enumerate(sos_state):
             self._set_state_cmd.send([self._oid, i, state[0], state[1]])
         # Send offset/scale (if they have changed)
-        su = to_fixed_32(self._scale, self._scale_frac_bits)
-        args = (self._oid, self._offset, su, self._scale_frac_bits,
-                self._auto_offset)
+        scale_frac_bits = calc_frac_bits([self._scale])
+        su = to_fixed_32(self._scale, scale_frac_bits)
+        args = (self._oid, self._offset, su, scale_frac_bits, self._auto_offset)
         if args != self._last_sent_offset_scale or self._auto_offset:
             self._set_offset_scale_cmd.send(args)
             self._last_sent_offset_scale = args
@@ -324,7 +354,7 @@ class MCU_trigger_analog:
             self._set_raw_range_cmd.send(args)
             self._last_range_args = args
         # Update trigger in mcu (if it has changed)
-        args = [self._oid, self._trigger_type, to_fixed_32(self._trigger_value)]
+        args = [self._oid, self._trigger_type, self._trigger_value]
         if args != self._last_trigger_args:
             self._set_trigger_cmd.send(args)
             self._last_trigger_args = args

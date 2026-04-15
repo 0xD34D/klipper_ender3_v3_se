@@ -41,7 +41,7 @@ fixed_mul(int32_t coeff, int32_t value, uint_fast8_t frac_bits, int32_t *res)
     int64_t result = (int64_t)coeff * (int64_t)value;
     if (frac_bits) {
         // round up at the last bit to be shifted away
-        result += 1 << (frac_bits - 1);
+        result += 1LL << (frac_bits - 1);
         // shift the decimal right to discard the coefficient fractional bits
         result >>= frac_bits;
     }

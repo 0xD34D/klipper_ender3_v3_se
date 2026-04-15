@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, logging, math, bisect
-import mcu
+import mcu, mathutil
 from . import ldc1612, trigger_analog, probe, manual_probe
 
 OUT_OF_RANGE = 99.9
@@ -429,7 +429,7 @@ class EddyDescend:
         sos_filter.set_offset_scale(0, 1.)
         self._trigger_analog.set_raw_range(0, MAX_VALID_RAW_VALUE)
         trigger_freq = self._calibration.height_to_freq(self._descend_z)
-        conv_freq = self._sensor_helper.convert_frequency(trigger_freq)
+        conv_freq = self._sensor_helper.convert_frequency_to_raw(trigger_freq)
         self._trigger_analog.set_trigger('gt', conv_freq)
     # Probe session interface
     def start_probe_session(self, gcmd):
@@ -506,6 +506,8 @@ class EddyTap:
         self._filter_design = None
         self._tap_z_offset = config.getfloat('tap_z_offset', 0.)
         self._tap_threshold = config.getfloat('tap_threshold', 0., above=0.)
+        self._least_squares_cache = {}
+        self._current_tap_threshold = 0.
         if self._tap_threshold:
             self._setup_tap()
     # Setup for "tap" probe request
@@ -513,27 +515,32 @@ class EddyTap:
         # Create sos filter "design"
         cfg_error = self._printer.config_error
         sps = self._sensor_helper.get_samples_per_second()
-        design = trigger_analog.DigitalFilter(sps, cfg_error,
-                                              lowpass=25.0, lowpass_order=4)
-        # Create the derivative (sample to sample difference) post filter
-        self._filter_design = trigger_analog.DerivativeFilter(design)
+        design = trigger_analog.DigitalFilter(sps, cfg_error)
+        design.add_lowpass(25.0, 4)
+        design.add_derivative()
+        self._filter_design = design
         # Create SOS filter
         cmd_queue = self._trigger_analog.get_dispatch().get_command_queue()
         mcu = self._sensor_helper.get_mcu()
-        sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, 5)
+        filter_size = design.get_size()
+        sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, filter_size)
         self._trigger_analog.setup_sos_filter(sos_filter)
     def _prep_trigger_analog_tap(self, gcmd):
         if not self._tap_threshold:
             raise self._printer.command_error("Tap not configured")
+        # Setup mcu filter (scale internal values to milli-hz)
         sos_filter = self._trigger_analog.get_sos_filter()
         sos_filter.set_filter_design(self._filter_design)
-        sos_filter.set_offset_scale(0, 1., auto_offset=True)
+        FRAC_HZ = 1000.
+        s = FRAC_HZ * self._sensor_helper.convert_raw_to_frequency(1)
+        sos_filter.set_offset_scale(0, s, auto_offset=True)
         self._trigger_analog.set_raw_range(0, MAX_VALID_RAW_VALUE)
-        convert_frequency = self._sensor_helper.convert_frequency
+        # Set mcu trigger to tap_threshold
         tap_threshold = gcmd.get_float("TAP_THRESHOLD",
                                        self._tap_threshold, above=0.)
-        raw_threshold = convert_frequency(tap_threshold)
-        self._trigger_analog.set_trigger('diff_peak_gt', raw_threshold)
+        samp_thresh = int(FRAC_HZ * tap_threshold + 0.5)
+        self._trigger_analog.set_trigger('diff_peak_gt', samp_thresh)
+        self._current_tap_threshold = tap_threshold
     # Measurement analysis to determine "tap" position
     def _validate_samples_time(self, measures, start_time, end_time):
         cmderr = self._printer.command_error
@@ -560,48 +567,111 @@ class EddyTap:
                                       s.get_past_mcu_position(pos_time))
                     for s in kin.get_steppers()}
         return kin.calc_position(kin_spos)
-    def _calc_least_squares(self, eqs, ans, est_z_contact):
-        # XXX - this implementation is not efficient
-        len_data = len(eqs)
-        import numpy
-        for i in range(len_data):
-            eq = eqs[i]
-            step_z = eq[1]
-            if step_z < est_z_contact:
-                eq[2] = eq[3] = 0.
-                continue
-            eq[2] = (step_z - est_z_contact)
-            eq[3] = (step_z - est_z_contact)**2
-        res = numpy.linalg.lstsq(eqs, ans, rcond=None)
-        coeffs = list(res[0])
-        if coeffs[3] < 0.:
-            # z**2 factor can't be negative - retry using only linear
-            res = numpy.linalg.lstsq(eqs[:][:,:3], ans, rcond=None)
-            coeffs = list(res[0]) + [0.]
-        if not res[1]:
-            err = sys.float_info.max
-        else:
-            err = res[1][0]
-        #logging.info("z=%.6f err=%.3f coeffs=%s", est_z_contact, err, coeffs)
-        return err, coeffs
-    def _find_least_squares(self, data):
-        len_data = len(data)
-        import numpy
-        # Populate initial numpy linear least squares arrays
-        eqs = numpy.zeros((len_data, 4))
-        ans = numpy.zeros((len_data,))
-        for i, (sensor_freq, tool_pos) in enumerate(data):
-            ans[i] = sensor_freq
+    def _build_ls_matrix(self, samples, est_z_contact):
+        # The function here is only a reference for the optimized version below
+        len_samples = len(samples)
+        eqs = [[0.] * 4 for i in range(len_samples)]
+        ans = [[0.] for i in range(len_samples)]
+        for i, (step_z, sensor_freq) in enumerate(samples):
+            ans[i][0] = sensor_freq
             eq = eqs[i]
             eq[0] = 1.
-            eq[1] = tool_pos[2]
-            #logging.info("sample: freq=%.3f z=%.6f", sensor_freq, tool_pos[2])
+            if step_z <= est_z_contact:
+                # 1*c0 + (z-ezc)*c1 + ezc*c2 + ezc*ezc*c3 = freq
+                eq[1] = step_z - est_z_contact
+                eq[2] = est_z_contact
+                eq[3] = est_z_contact * est_z_contact
+            else:
+                # 1*c0 + 0*c1 + z*c2 + z*z*c3 = freq
+                eq[1] = 0.
+                eq[2] = step_z
+                eq[3] = step_z * step_z
+        eqst = mathutil.mat_transp(eqs)
+        eqst_eqs = mathutil.mat_mat_mul(eqst, eqs)
+        eqst_ans = mathutil.mat_mat_mul(eqst, ans)
+        return eqst_eqs, eqst_ans
+    def _build_sums(self, samples, num_le):
+        sum_le_z = sum_le_z2 = sum_le_freq = sum_le_freq_z = 0.
+        for z, freq in samples[:num_le]:
+            sum_le_z += z
+            sum_le_z2 += z**2
+            sum_le_freq += freq
+            sum_le_freq_z += freq*z
+        sum_gt_z = sum_gt_z2 = sum_gt_z3 = sum_gt_z4 = 0.
+        sum_gt_freq = sum_gt_freq_z = sum_gt_freq_z2 = 0.
+        for z, freq in samples[num_le:]:
+            sum_gt_z += z
+            sum_gt_z2 += z**2
+            sum_gt_z3 += z**3
+            sum_gt_z4 += z**4
+            sum_gt_freq += freq
+            sum_gt_freq_z += freq*z
+            sum_gt_freq_z2 += freq * z**2
+        return (sum_le_z, sum_le_z2, sum_le_freq, sum_le_freq_z,
+                sum_gt_z, sum_gt_z2, sum_gt_z3, sum_gt_z4,
+                sum_gt_freq, sum_gt_freq_z, sum_gt_freq_z2)
+    def _build_ls_matrix_opt(self, samples, est_z_contact):
+        # This function is an optimized version of _build_ls_matrix()
+        num_le = bisect.bisect(samples, (est_z_contact, sys.float_info.max))
+        # Check for previously calculated raw freq/z counters
+        sums = self._least_squares_cache.get(num_le)
+        if sums is None:
+            sums = self._build_sums(samples, num_le)
+            self._least_squares_cache[num_le] = sums
+        (sum_le_z, sum_le_z2, sum_le_freq, sum_le_freq_z,
+         sum_gt_z, sum_gt_z2, sum_gt_z3, sum_gt_z4,
+         sum_gt_freq, sum_gt_freq_z, sum_gt_freq_z2) = sums
+        num_samples = len(samples)
+        ezc = est_z_contact
+        ezc2 = ezc**2
+        ezc3 = ezc**3
+        ezc4 = ezc**4
+        # Build matrices for least squares evaluation
+        eqst_eqs = [[0.] * 4 for i in range(4)]
+        eqst_eqs[0][0] = num_samples
+        eqst_eqs[1][1] = sum_le_z2 - 2*ezc*sum_le_z + num_le*ezc2
+        eqst_eqs[2][2] = sum_gt_z2 + num_le*ezc2
+        eqst_eqs[3][3] = sum_gt_z4 + num_le*ezc4
+        eqst_eqs[0][1] = eqst_eqs[1][0] = sum_le_z - num_le*ezc
+        eqst_eqs[0][2] = eqst_eqs[2][0] = sum_gt_z + num_le*ezc
+        eqst_eqs[0][3] = eqst_eqs[3][0] = sum_gt_z2 + num_le*ezc2
+        eqst_eqs[2][3] = eqst_eqs[3][2] = sum_gt_z3 + num_le*ezc3
+        eqst_eqs[2][1] = eqst_eqs[1][2] = ezc * eqst_eqs[0][1]
+        eqst_eqs[3][1] = eqst_eqs[1][3] = ezc2 * eqst_eqs[0][1]
+        eqst_ans = [[0.] for i in range(4)]
+        eqst_ans[0][0] = sum_le_freq + sum_gt_freq
+        eqst_ans[1][0] = sum_le_freq_z - ezc*sum_le_freq
+        eqst_ans[2][0] = sum_gt_freq_z + ezc*sum_le_freq
+        eqst_ans[3][0] = sum_gt_freq_z2 + ezc2 * sum_le_freq
+        return eqst_eqs, eqst_ans
+    def _calc_least_squares(self, samples, est_z_contact):
+        eqst_eqs, eqst_ans = self._build_ls_matrix_opt(samples, est_z_contact)
+        coeffs = mathutil.gaussian_solve(eqst_eqs, eqst_ans)
+        if coeffs is not None and coeffs[3][0] < 0.:
+            # z**2 factor can't be negative - retry using only linear
+            alt_eqst_eqs = [ee[:3] for ee in eqst_eqs[:3]]
+            alt_eqst_ans = eqst_ans[:3]
+            coeffs = mathutil.gaussian_solve(alt_eqst_eqs, alt_eqst_ans)
+            if coeffs is not None:
+                coeffs = coeffs + [[0.]]
+        if coeffs is None:
+            return sys.float_info.max, [[0.]] * 4
+        rel_err = -sum([c[0]*a[0] for c, a in zip(coeffs, eqst_ans)])
+        return rel_err, coeffs
+    def _find_least_squares(self, data):
+        #for d in data:
+        #    logging.info("sample: freq=%.3f z=%.6f", d[0], d[1][2])
+        self._least_squares_cache.clear()
+        # Change base of freq/z measurements to improve numerical stability
+        base_z = .5 * (data[0][1][2] + data[-1][1][2])
+        base_freq = .5 * (data[0][0] + data[-1][0])
+        samples = [(d[1][2] - base_z, d[0] - base_freq) for d in data]
         # Run least squares with various z values to reduce residual error
-        min_z = best_z = eqs[0][1]
-        max_z = eqs[-1][1]
+        min_z = best_z = samples[0][0]
+        max_z = samples[-1][0]
         best_err = sys.float_info.max
         best_coeffs = [0., 0., 0., 0.]
-        while max_z - min_z > 0.000250:
+        while max_z - min_z > 0.000050:
             # Select z value to check
             mid_z = (min_z + max_z) * .5
             if best_z < mid_z:
@@ -609,7 +679,7 @@ class EddyTap:
             else:
                 guess_z = (min_z + best_z) * .5
             # Calculate least squares error for given z
-            guess_err, coeffs = self._calc_least_squares(eqs, ans, guess_z)
+            guess_err, coeffs = self._calc_least_squares(samples, guess_z)
             # Update search bounds
             if guess_err < best_err:
                 if guess_z > best_z:
@@ -624,17 +694,44 @@ class EddyTap:
                     max_z = guess_z
                 else:
                     min_z = guess_z
-        best_coeffs = [float(v) for v in best_coeffs]
-        #logging.info("best: z=%.6f err=%.6f coeffs=%s",
-        #             best_z, best_err, best_coeffs)
-        return float(best_z), best_coeffs
-    def _analyze_pullback(self, measures, start_time, end_time):
+        self._least_squares_cache.clear()
+        # Return to original freq/z measurement base
+        bc = [v[0] for v in best_coeffs]
+        final_coeffs = (base_z + best_z,
+                        base_freq + bc[0] + best_z*bc[2] + best_z*best_z*bc[3],
+                        bc[1], bc[2] + 2.*best_z*bc[3], bc[3])
+        #logging.info("probe_analysis: coeffs=%s", final_coeffs)
+        return final_coeffs
+    def _error_detect(self, msg):
+        raise self._printer.command_error("Unable to detect tap: %s" % (msg,))
+    def _analyze_pullback(self, measures, start_time, end_time, speed):
+        reactor = self._printer.get_reactor()
         self._validate_samples_time(measures, start_time, end_time)
         # Correlate measurements to toolhead position at time of measurement
         data = [(sensor_freq, self._lookup_toolhead_pos(samp_time))
                 for samp_time, sensor_freq, sensor_z in measures]
+        reactor.pause(0.)
+        min_z = data[0][1][2]
+        max_z = data[-1][1][2]
+        if max_z - min_z < 0.350:
+            self._error_detect("insufficient lift (%.6f vs %.6f)"
+                               % (max_z - min_z, 0.350))
         # Find best fit for extracted measurements
-        z_contact, coeffs = self._find_least_squares(data)
+        coeffs = self._find_least_squares(data)
+        z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
+        reactor.pause(0.)
+        sps = self._sensor_helper.get_samples_per_second()
+        contact_slope_delta_per_sample = (depress_slope - slope) * speed / sps
+        if contact_slope_delta_per_sample < self._current_tap_threshold:
+            self._error_detect("insufficient slope delta (%.6f vs %.6f)"
+                               % (contact_slope_delta_per_sample,
+                                  self._current_tap_threshold))
+        if slope >= 0. or slope2 < 0.:
+            self._error_detect("invalid free air slope (s=%.6f s2=%.6f)"
+                               % (slope, slope2))
+        if z_contact - min_z < 0.030 or z_contact - min_z > 0.250:
+            self._error_detect("invalid depress distance (%.6f vs %.6f:%.6f)"
+                               % (z_contact - min_z, 0.030, 0.250))
         # Report probe position
         trig_idx = len(data)-1
         while trig_idx > 0 and data[trig_idx-1][1][2] > z_contact:
@@ -668,7 +765,7 @@ class EddyTap:
         start_time = retract_start_time - 0.010
         end_time = retract_start_time + 0.150
         self._gather.add_probe_request(self._analyze_pullback, start_time,
-                                       end_time, start_time, end_time)
+                                       end_time, start_time, end_time, speed)
     def pull_probed_results(self):
         return self._gather.pull_probed()
     def end_probe_session(self):

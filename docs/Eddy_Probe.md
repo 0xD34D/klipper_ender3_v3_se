@@ -116,12 +116,6 @@ Practically, it ensures that the Eddy's output data absolute value
 change per second (velocity) is high enough - higher than the noise level,
 and that upon collision it always decreases by at least this value.
 
-Before setting it to any other value, it is necessary to install `scipy`:
-
-```bash
-~/klippy-env/bin/pip install scipy
-```
-
 The suggested calibration routine works as follows:
 1. Home Z
 2. Place the toolhead at the center of the bed.
