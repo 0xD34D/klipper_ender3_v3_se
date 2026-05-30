@@ -6,6 +6,7 @@
 
 from . import hx71x
 from . import ads1220
+from . import ads131m0x
 from .bulk_sensor import BatchWebhooksClient
 import collections, itertools
 # We want either Python 3's zip() or Python 2's izip() but NOT 2's zip():
@@ -322,10 +323,10 @@ class LoadCellSampleCollector:
         while self.is_started:
             now = self._reactor.monotonic()
             if self._mcu.estimated_print_time(now) > timeout:
-                self._finish_collecting()
+                _, (errors, overflows) = self._finish_collecting()
                 raise self._printer.command_error(
                     "LoadCellSampleCollector timed out! Errors: %i,"
-                    " Overflows: %i" % (self._errors, self._overflows))
+                    " Overflows: %i" % (errors, overflows))
             if self._mcu.is_fileoutput():
                 break
             self._reactor.pause(now + RETRY_DELAY)
@@ -369,7 +370,7 @@ class LoadCell:
         self.config_name = config.get_name()
         self.name = config.get_name().split()[-1]
         self.sensor = sensor   # must implement BulkSensorAdc
-        buffer_size = sensor.get_samples_per_second() // 2
+        buffer_size = int(sensor.get_samples_per_second() / 2)
         self._force_buffer = collections.deque(maxlen=buffer_size)
         self.reference_tare_counts = config.getint('reference_tare_counts',
                                                    default=None)
@@ -456,7 +457,7 @@ class LoadCell:
     # performs safety checks for saturation
     def avg_counts(self, num_samples=None):
         if num_samples is None:
-            num_samples = self.sensor.get_samples_per_second()
+            num_samples = int(self.sensor.get_samples_per_second())
         samples, errors = self.get_collector().collect_min(num_samples)
         if errors:
             raise self.printer.command_error(
@@ -524,6 +525,7 @@ def load_config(config):
     sensors = {}
     sensors.update(hx71x.HX71X_SENSOR_TYPES)
     sensors.update(ads1220.ADS1220_SENSOR_TYPE)
+    sensors.update(ads131m0x.ADS131M0X_SENSOR_TYPES)
     sensor_class = config.getchoice('sensor_type', sensors)
     return LoadCell(config, sensor_class(config))
 

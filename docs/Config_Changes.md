@@ -8,6 +8,16 @@ All dates in this document are approximate.
 
 ## Changes
 
+20260525: The internal implementation of "probe:z_virtual_endstop" has
+changed. Most users will not observe a change in behavior. Previously
+it was technically possible to mix "probe:z_virtual_endstop" with
+other types of Z endstops and this behavior is no longer valid.
+
+20260501: The handling of the `[probe_eddy_current]` `tap_threshold`
+config option and associated `TAP_THRESHOLD` G-Code parameter has
+changed. It will be necessary to recalibrate the value. See the
+[eddy probe documentation](Eddy_Probe.md) for calibration directions.
+
 20260408: The script `lib/canboot/flash_can.py` has been updated to
 the most current version from
 [Katapult](https://github.com/Arksine/katapult) and as such renamed to

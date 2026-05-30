@@ -569,6 +569,11 @@ max_z_accel:
 #   This sets the maximum acceleration (in mm/s^2) of movement along
 #   the z axis. It limits the acceleration of the z stepper motor. The
 #   default is to use max_accel for max_z_accel.
+# max_angular_velocity: 0
+#   This limits the maximum angular velocity (in rad/s) of a move.
+#   Lower values will result in longer print times, but prevents too
+#   fast motions near the center. A value of 0 deactivates the
+#   scaling. The default is to not apply maximum angular velocity limits.
 
 # The stepper_bed section is used to describe the stepper controlling
 # the bed.
@@ -1789,8 +1794,9 @@ the [command reference](G-Codes.md#input_shaper).
 #   value is 0, which disables input shaping for Z axis.
 #shaper_type: mzv
 #   A type of the input shaper to use for all axes. Supported
-#   shapers are zv, mzv, zvd, ei, 2hump_ei, and 3hump_ei. The default
-#   is mzv input shaper.
+#   shapers are zv, mzv, zvd, ei, 2hump_ei, and 3hump_ei. Some shapers
+#   support optional additional parameters, e.g. mzv(n=4,t=0.9) or
+#   ei(v_tol=0.1). The default is mzv input shaper (without parameters).
 #shaper_type_x:
 #shaper_type_y:
 #shaper_type_z:
@@ -2317,6 +2323,12 @@ sensor_type: ldc1612
 #intb_pin:
 #   MCU gpio pin connected to the ldc1612 sensor's INTB pin (if
 #   available). The default is to not use the INTB pin.
+#max_sensor_hz:
+#   Maximum expected resonant frequency reported by the sensor (in
+#   Hz). This is used during internal clock rate configuration. This
+#   value is typically only configured if the software reports a
+#   warning suggesting the value should be increased. The default is
+#   5000000.
 #descend_z:
 #   The nominal distance (in mm) between the nozzle and bed that a
 #   probing attempt should stop at. This parameter must be provided.
@@ -2344,15 +2356,13 @@ sensor_type: ldc1612
 #   settings do not have an effect if using a probe "METHOD" of
 #   "scan", "rapid_scan", or "tap".
 #tap_threshold:
-#   Noise cutoff/stop trigger threshold (in Hz). Specify this value to
-#   enable support for "METHOD=tap" probe commands. See Eddy_Probe.md
-#   for more information. Larger values make the tap detection less
-#   sensitive. That is, larger values make it less likely the toolhead
-#   will incorrectly stop early due to noise, while increasing the
-#   risk of the toolhead not correctly stopping when it first contacts
-#   the bed. If this value is specified then one may override its
-#   value at run-time using the "TAP_THRESHOLD" parameter on probe
-#   commands. The default is to not enable support for "tap" probing.
+#   Descent stop threshold (in Hz/mm) for "tap" probing. Larger values
+#   reduce the chance of the toolhead incorrectly stopping early due
+#   to noise, while increasing the risk of the toolhead not correctly
+#   stopping when it first contacts the bed. See Eddy_Probe.md for
+#   more information. This value may be overridden at run-time using
+#   the "TAP_THRESHOLD" parameter on probe commands.  The default is
+#   to not enable "tap" probing.
 #tap_z_offset: 0.0
 #   The Z height (in mm) of the nozzle relative to the bed at the
 #   contact point detected during "tap" probing. Nominally this would
@@ -5256,6 +5266,64 @@ data_ready_pin:
 #vref:
 #   The selected voltage reference. Valid values are: 'internal', 'REF0', 'REF1'
 #   and 'analog_supply'. Default is 'internal'.
+```
+
+#### ADS131M0x
+The ADS131M0x is a family of fast, 24-bit, delta-sigma ADCs. Two sensors
+are supported from this family: ADS131M02 with two simultaneously-sampling
+differential channels and ADS131M04 with four channels. They feature a
+programmable gain amplifier (PGA) with gains up to 128, configurable
+sampling rates up to 64000 samples per second, and require an external
+clock input (300 kHz to 8.4 MHz, 8.192 MHz nominal).
+```
+[load_cell]
+sensor_type: ads131m02
+#   Select 'ads131m02' for the 2-channel variant or 'ads131m04' for the
+#   4-channel variant. This parameter must be provided.
+cs_pin:
+#   The pin connected to the chip select line. This parameter must be
+#   provided.
+#spi_speed: 4000000
+#   The SPI bus speed. The default is 4 MHz.
+#spi_bus:
+#spi_software_sclk_pin:
+#spi_software_mosi_pin:
+#spi_software_miso_pin:
+#   See the "common SPI settings" section for a description of the
+#   above parameters.
+data_ready_pin:
+#   Pin connected to the data ready (DRDY) line. This parameter must be
+#   provided.
+#adc_channel: 0
+#   The ADC channel to read. For the ADS131M02, valid values are 0 and 1.
+#   For the ADS131M04, valid values are 0, 1, 2, and 3. The default is 0.
+#clock_freq:
+#   The external clock frequency (fCLKIN) in Hz supplied to the CLKIN pin.
+#   The valid range is 300000 to 8400000. The nominal clock frequency for the
+#   ADS131M0x is 8192000 Hz; it is recommended to use a clock source near
+#   this frequency. Either clock_freq or pwm_clock must be provided.
+#pwm_clock:
+#   Reference to a [static_pwm_clock] section that generates the clock signal
+#   for the CLKIN pin. The frequency of this clock is used as fCLKIN.
+#   Either clock_freq or pwm_clock must be provided.
+#sample_rate: 500.0
+#   The desired output sampling rate in samples per second. The firmware will
+#   select the closest available rate, if possible. When the nominal clock
+#   frequency of 8192000 Hz is used and global-chop mode is disabled, the
+#   following rates are available: 250, 500, 1000, 2000, 4000, 8000, 16000,
+#   32000, and 64000. The actual effective sampling rate can be checked via
+#   the LOAD_CELL_DIAGNOSTIC command. The default is 500.
+#gain: 128
+#   The PGA gain setting. Valid values are: 1, 2, 4, 8, 16, 32, 64, and
+#   128. The default is 128.
+#enable_global_chop: False
+#   Enable global-chop mode to reduce internal system offset errors by averaging
+#   two conversions with opposite input polarities. The default is False.
+#global_chop_delay: 16
+#   The global-chop delay in modulator clock periods, only used when
+#   enable_global_chop is True. Higher values allow more settling time
+#   between input swaps. Valid values are all powers of 2 from 2 to 65536.
+#   The default is 16.
 ```
 
 ### [load_cell_probe]
