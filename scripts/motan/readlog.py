@@ -564,6 +564,57 @@ class HandleEddyCurrent:
             self.data_pos += 1
 LogHandlers["ldc1612"] = HandleEddyCurrent
 
+# Extract load cell force data
+class HandleLoadCell:
+    SubscriptionIdParts = 2
+    ParametersMin = 1
+    ParametersMax = 2
+    DataSets = [
+        ('loadcell(<name>)', 'Force reading from load cell'),
+        ('loadcell(<name>,counts)', 'Raw ADC counts from load cell'),
+    ]
+    def __init__(self, lmanager, name, name_parts):
+        self.name = name
+        self.sensor_name = name_parts[1]
+        if len(name_parts) == 3 and name_parts[2] != "counts":
+            raise error("Unknown loadcell selection '%s'" % (name_parts[2],))
+        self.report_counts = len(name_parts) == 3
+        self.jdispatch = lmanager.get_jdispatch()
+        self.next_samp = self.prev_samp = [0., 0., 0., 0.]
+        self.cur_data = []
+        self.data_pos = 0
+    def get_label(self):
+        if self.report_counts:
+            label = '%s counts' % (self.sensor_name,)
+            return {'label': label, 'units': 'ADC Counts'}
+        label = '%s force' % (self.sensor_name,)
+        return {'label': label, 'units': 'Force\n(g)'}
+    def pull_data(self, req_time):
+        while 1:
+            next_time, next_force, next_counts, _ = self.next_samp
+            if req_time <= next_time:
+                prev_time, prev_force, prev_counts, _ = self.prev_samp
+                if self.report_counts:
+                    next_val = next_counts
+                    prev_val = prev_counts
+                else:
+                    next_val = next_force
+                    prev_val = prev_force
+                return interpolate(next_val, prev_val, next_time, prev_time,
+                                   req_time)
+            if self.data_pos >= len(self.cur_data):
+                # Read next data block
+                jmsg = self.jdispatch.pull_msg(req_time, self.name)
+                if jmsg is None:
+                    return 0.
+                self.cur_data = jmsg['data']
+                self.data_pos = 0
+                continue
+            self.prev_samp = self.next_samp
+            self.next_samp = self.cur_data[self.data_pos]
+            self.data_pos += 1
+LogHandlers["loadcell"] = HandleLoadCell
+
 
 ######################################################################
 # Log reading
