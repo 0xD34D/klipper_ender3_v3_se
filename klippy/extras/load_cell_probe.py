@@ -10,6 +10,7 @@ import mathutil
 
 from . import hx71x
 from . import ads1220
+from . import cs1237
 from . import ads131m0x
 from . import probe, manual_probe, trigger_analog, load_cell
 
@@ -413,6 +414,12 @@ class TappingMove:
         epos, collector = self._load_cell_probing_move.probing_move(gcmd)
         # collect samples from the tap
         toolhead = self._printer.lookup_object('toolhead')
+        # Homing workaround
+        phoming = self._printer.lookup_object('homing')
+        if phoming.check_probe_first_home(gcmd):
+            curpos = toolhead.get_position()
+            curpos[2] -= epos[2]
+            toolhead.set_position(curpos)
 
         # Lift the toolhead while collecting the samples we will use for
         # the fit. The ascent data shall cover both the contact region
@@ -490,11 +497,11 @@ class TappingMove:
                 "each) for piecewise fit" % (below_count, above_count,
                                              FIT_MIN_POINTS))
 
-        gcmd.respond_info("Load cell probe fit: n_below=%d n_above=%d"
-                          " z_contact=%.4f raw=%.4f delta=%.4f"
-                          " depress_slope=%.4f" % (
-                          below_count, above_count, z_contact, raw_z,
-                          raw_z - z_contact, depress_slope))
+        # gcmd.respond_info("Load cell probe fit: n_below=%d n_above=%d"
+        #                   " z_contact=%.4f raw=%.4f delta=%.4f"
+        #                   " depress_slope=%.4f" % (
+        #                   below_count, above_count, z_contact, raw_z,
+        #                   raw_z - z_contact, depress_slope))
 
         if self._load_cell_probing_move._mcu.is_fileoutput():
             # In debugging mode: check fit result
@@ -667,6 +674,7 @@ class LoadCellPrinterProbe:
         sensors = {}
         sensors.update(hx71x.HX71X_SENSOR_TYPES)
         sensors.update(ads1220.ADS1220_SENSOR_TYPE)
+        sensors.update(cs1237.CS1237_SENSOR_TYPE)
         sensors.update(ads131m0x.ADS131M0X_SENSOR_TYPES)
         sensor_class = config.getchoice('sensor_type', sensors)
         sensor = sensor_class(config)
@@ -692,7 +700,8 @@ class LoadCellPrinterProbe:
         tap_session = TapSession(config, self._tapping_move,
                                  self._probe_offsets, self._param_helper)
         self._probe_session = probe.SampleAveragingHelper(config,
-            self._param_helper, tap_session.start_probe_session)
+            self._param_helper, tap_session.start_probe_session,
+            nozzle_probe=True)
         # printer integration
         LoadCellProbeCommands(config, load_cell_probing_move)
         probe.HomingViaProbeHelper(config, self.get_offsets()[2])

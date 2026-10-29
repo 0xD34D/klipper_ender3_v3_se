@@ -414,7 +414,7 @@ class EddyTapCalibration:
             if mc_coeffs is None:
                 raise gcmd.error(
                     "Must complete PROBE_EDDY_CURRENT_CALIBRATE first")
-            self._try_tap(gcmd, mc_coeffs[1][0] * -0.10)
+            self._try_tap(gcmd, mc_coeffs[1][0] * -0.15)
         elif tap_test == 'refine':
             # Attempt tap based on change in slope observed during last tap
             self._refine_tap_threshold = None
@@ -424,6 +424,9 @@ class EddyTapCalibration:
             z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
             contact_slope_delta = depress_slope - slope
             try_tap_threshold = contact_slope_delta * 0.20
+            max_safe_threshold = contact_slope_delta * 0.90
+            gcmd.respond_info("TAP_THRESHOLD tests should remain below %.3f" % (
+                max_safe_threshold))
             self._try_tap(gcmd, try_tap_threshold)
             self._refine_tap_threshold = try_tap_threshold
         elif tap_test == 'verify':
@@ -817,8 +820,6 @@ class EddyTap:
     # Measurement analysis to determine "tap" position
     def _validate_samples_time(self, measures, start_time, end_time):
         cmderr = self._printer.command_error
-        if end_time - start_time < 0.100:
-            raise cmderr("Tap detected too close to start of move")
         timestamps = [m[0] for m in measures]
         if len(timestamps) < 2:
             raise cmderr("Unable to obtain probe_eddy_current sensor readings")
@@ -864,9 +865,9 @@ class EddyTap:
         sps = self._sensor_helper.get_samples_per_second()
         contact_slope_delta = depress_slope - slope
         if contact_slope_delta < self._current_tap_threshold:
-            self._error_detect("insufficient slope delta (%.6f vs %.6f)"
-                               % (contact_slope_delta,
-                                  self._current_tap_threshold))
+            msg = "no contact found at z=%.3f (slope delta %.6f vs %.6f)" % (
+                min_z, contact_slope_delta, self._current_tap_threshold)
+            self._error_detect(msg)
         if slope >= 0. or slope2 < 0.:
             self._error_detect("invalid free air slope (s=%.6f s2=%.6f)"
                                % (slope, slope2))
@@ -1045,7 +1046,8 @@ class PrinterEddyProbe:
                            self.param_helper, trig_analog)
         EddyTapCalibration(config, self.calibration, eddy_tap)
         self.eddy_tap_session = probe.SampleAveragingHelper(
-            config, self.param_helper, eddy_tap.start_probe_session)
+            config, self.param_helper, eddy_tap.start_probe_session,
+            nozzle_probe=True)
         # Probing via "scan" and "rapid_scan" requests
         self.eddy_scan = EddyScanningProbe(config, self.sensor_helper,
                                            self.calibration, self.probe_offsets)
@@ -1053,6 +1055,19 @@ class PrinterEddyProbe:
         self.cmd_helper = probe.ProbeCommandHelper(config, self,
                                                    can_set_z_offset=False)
         self.printer.add_object('probe', self)
+        # Register tap as a manual probe provider
+        mprobe = self.printer.load_object(config, 'manual_probe')
+        mprobe.register_manual_method("tap", self._handle_manual_probe_via_tap)
+    def _handle_manual_probe_via_tap(self, gcmd):
+        fo_params = dict(gcmd.get_command_parameters())
+        fo_params["METHOD"] = "tap"
+        gcode = self.printer.lookup_object('gcode')
+        fo_gcmd = gcode.create_gcode_command("PROBE", "PROBE", fo_params)
+        probe_session = self.eddy_tap_session.start_probe_session(fo_gcmd)
+        probe_session.run_probe(fo_gcmd)
+        pos = probe_session.pull_probed_results()[0]
+        probe_session.end_probe_session()
+        return pos
     def add_client(self, cb):
         self.sensor_helper.add_client(cb)
     def get_probe_params(self, gcmd=None):

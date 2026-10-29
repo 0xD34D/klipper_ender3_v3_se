@@ -54,6 +54,8 @@ class Polynomial2d:
             eqs.append([1., x, x*x])
             ans.append([y])
         res = mathutil.solve_linear_equations(eqs, ans)
+        if res is None:
+            return None
         return cls(res[0][0], res[1][0], res[2][0])
 
 class TemperatureProbe:
@@ -95,7 +97,7 @@ class TemperatureProbe:
         self.last_temp_read_time = 0.
         self.last_measurement = (0., 99999999., 0.,)
         # Calibration State
-        self._method = "manual"
+        self._gcode_params = ""
         self.cal_helper = None
         self.next_auto_temp = 99999999.
         self.target_temp = 0
@@ -156,12 +158,18 @@ class TemperatureProbe:
         smoothed_temp = self.last_measurement[0]
         if self.in_calibration and smoothed_temp >= self.next_auto_temp:
             self.next_auto_temp = 99999999.
-            self.gcode.run_script("TEMPERATURE_PROBE_NEXT")
+            cmd = "TEMPERATURE_PROBE_NEXT"
+            if self._gcode_params:
+                cmd += " " + self._gcode_params
+            try:
+                self.gcode.run_script(cmd)
+            except Exception:
+                logging.exception("%s: error running %s" % (self.name, cmd))
 
     def get_temp(self, eventtime=None):
         return self.last_measurement[0], self.target_temp
 
-    def _collect_sample(self, mpresult, tool_zero_z):
+    def _collect_sample(self, mpresult):
         probe = self._get_probe()
         x_offset, y_offset, _ = probe.get_offsets()
         speeds = self._get_speeds()
@@ -174,7 +182,7 @@ class TemperatureProbe:
         cur_pos[0] -= x_offset
         cur_pos[1] -= y_offset
         toolhead.manual_move(cur_pos, move_speed)
-        return self.cal_helper.collect_sample(mpresult, tool_zero_z, speeds)
+        return self.cal_helper.collect_sample(mpresult, speeds)
 
     def _prepare_next_sample(self, last_temp, tool_zero_z):
         # Register our own abort command now that the manual
@@ -210,10 +218,8 @@ class TemperatureProbe:
                 % (self.total_expansion,)
             )
         self.last_zero_pos = mpresult.bed_z
-        toolhead = self.printer.lookup_object("toolhead")
-        tool_zero_z = toolhead.get_position()[2]
         try:
-            last_temp = self._collect_sample(mpresult, tool_zero_z)
+            last_temp = self._collect_sample(mpresult)
         except Exception:
             self._finalize_drift_cal(False)
             raise
@@ -223,7 +229,7 @@ class TemperatureProbe:
             self._finalize_drift_cal(True)
         else:
             try:
-                self._prepare_next_sample(last_temp, tool_zero_z)
+                self._prepare_next_sample(last_temp, mpresult.bed_z)
                 if self.sample_count == 1:
                     self._set_bed_temp(self.cal_bed_temp)
             except Exception:
@@ -240,6 +246,7 @@ class TemperatureProbe:
         self.last_zero_pos = None
         self.total_expansion = 0
         self.start_pos = []
+        self._gcode_params = ""
         # Unregister Temporary Commands
         self.gcode.register_command("ABORT", None)
         self.gcode.register_command("TEMPERATURE_PROBE_NEXT", None)
@@ -324,19 +331,8 @@ class TemperatureProbe:
     cmd_TEMPERATURE_PROBE_CALIBRATE_help = (
         "Calibrate probe temperature drift compensation"
     )
-    def _auto_probe(self, gcmd):
-        fo_params = dict(gcmd.get_command_parameters())
-        fo_params['METHOD'] = self._method
-        gcode = self.printer.lookup_object('gcode')
-        fo_gcmd = gcode.create_gcode_command("PROBE", "PROBE", fo_params)
-        pprobe = self.printer.lookup_object("probe")
-        probe_session = pprobe.start_probe_session(fo_gcmd)
-        probe_session.run_probe(fo_gcmd)
-        pos = probe_session.pull_probed_results()[0]
-        probe_session.end_probe_session()
-        self._manual_probe_finalize(pos)
     def cmd_TEMPERATURE_PROBE_CALIBRATE(self, gcmd):
-        self._method = gcmd.get('METHOD', 'manual').lower()
+        method = gcmd.get('MANUAL_METHOD', 'manual').lower()
         if self.cal_helper is None:
             raise gcmd.error(
                 "No calibration helper registered for [%s]"
@@ -384,6 +380,9 @@ class TemperatureProbe:
                 "Auxiliary Probe Drift Commands already registered. Use "
                 "TEMPERATURE_PROBE_COMPLETE or ABORT to exit."
             )
+        # Forward gcmd params
+        if method == "tap":
+            self._gcode_params = gcmd.get_raw_command_parameters()
         self.in_calibration = True
         self.cal_helper.start_calibration()
         self.target_temp = target_temp
@@ -399,9 +398,6 @@ class TemperatureProbe:
         # Capture start position and begin initial probe
         toolhead = self.printer.lookup_object("toolhead")
         self.start_pos = toolhead.get_position()[:2]
-        if self._method == "tap":
-            self._auto_probe(gcmd)
-            return
         manual_probe.ManualProbeHelper(
             self.printer, gcmd, self._manual_probe_finalize
         )
@@ -424,9 +420,6 @@ class TemperatureProbe:
         curpos[2] = start_z
         toolhead.manual_move(curpos, probe_speed)
         self.gcode.register_command("ABORT", None)
-        if self._method == "tap":
-            self._auto_probe(gcmd)
-            return
         manual_probe.ManualProbeHelper(
             self.printer, gcmd, self._manual_probe_finalize
         )
@@ -556,7 +549,7 @@ class EddyDriftCompensation:
             % (self.name, self.cal_temp)
         )
 
-    def collect_sample(self, mpresult, tool_zero_z, speeds):
+    def collect_sample(self, mpresult, speeds):
         if self.calibration_samples is None:
             self.calibration_samples = [[] for _ in range(DRIFT_SAMPLE_COUNT)]
         move_times = []
@@ -575,7 +568,7 @@ class EddyDriftCompensation:
                     while ptime > end_time:
                         move_times.pop(0)
                         if not move_times:
-                            return idx >= DRIFT_SAMPLE_COUNT - 1
+                            return idx < DRIFT_SAMPLE_COUNT - 1
                         idx, start_time, end_time = move_times[0]
                     if ptime < start_time:
                         continue
@@ -587,7 +580,7 @@ class EddyDriftCompensation:
         for i in range(DRIFT_SAMPLE_COUNT):
             if i == 0:
                 # Move down to first sample location
-                cur_pos[2] = tool_zero_z + .05
+                cur_pos[2] = mpresult.bed_z + .05
             else:
                 # Sample each .5mm in z
                 cur_pos[2] += 1.
@@ -601,8 +594,12 @@ class EddyDriftCompensation:
         toolhead.wait_moves()
         # Wait for sample collection to finish
         reactor = self.printer.get_reactor()
+        mcu = self.printer.lookup_object('mcu')
         evttime = reactor.monotonic()
         while move_times:
+            if mcu.estimated_print_time(evttime) > move_times[-1][2] + 1.0:
+                raise self.printer.command_error(
+                    "%s: sensor outage during drift calibration" % (self.name,))
             evttime = reactor.pause(evttime + .1)
         sample_temp = sum(temps) / len(temps)
         for i, data in enumerate(probe_samples):
@@ -629,16 +626,20 @@ class EddyDriftCompensation:
         if not success:
             return
         gcode = self.printer.lookup_object("gcode")
-        if len(cal_samples) < 3:
+        if len(cal_samples[0]) < 3:
             raise gcode.error(
                 "calibration error, not enough samples"
             )
         min_temp, _ = cal_samples[0][0]
-        max_temp, _ = cal_samples[-1][0]
+        max_temp, _ = cal_samples[0][-1]
         polynomials = []
         for i, coords in enumerate(cal_samples):
             height = .05 + i * .5
             poly = Polynomial2d.fit(coords)
+            if poly is None:
+                raise gcode.error(
+                    "calibration error, unable to fit polynomial at Z=%.2f"
+                    % (height,))
             polynomials.append(poly)
             logging.info("Polynomial at Z=%.2f: %s" % (height, repr(poly)))
         end_vld_temp = max(self.max_valid_temp, max_temp)
